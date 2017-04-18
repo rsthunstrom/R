@@ -1,0 +1,204 @@
+---
+title: "HWForecastExample"
+author: "Reed Thunstrom"
+output: word_document
+---
+
+First Read in Data
+```{r}
+
+#Install forecast packages
+install.packages("forecast", repo="http://cran.us.r-project.org")
+library(forecast)
+
+#Update link to your file location to read in data
+comp_data<- read.csv('/Users/Thunstrom/Documents/MSPA/PREDICT 413/Midterm/competitiondata.csv', header=TRUE)
+
+#converting my dataset date value to an actual date, it is text in the .csv
+comp_data$DATE<- as.Date(as.character(comp_data$DATE), "%Y%m%d")
+
+#Creating a year and month variable, because my dataset did not have those
+comp_data["Year"] <- as.numeric(substr(as.character(comp_data$DATE),1,4))
+comp_data["Month"] <- as.numeric(substr(as.character(comp_data$DATE),6,7))
+
+#Aggregate precipitation by month
+comp_data_month_year<- (aggregate(comp_data[,'PRCP'], list(comp_data$Month, comp_data$Year), sum))
+df<- data.frame(comp_data_month_year)
+
+#final dataset
+comp_data_df<- setNames(df, c("Month", "Year", "PRCP"))
+
+#Look at the data to make sure it's good to go
+head(comp_data_df)
+```
+
+
+Then create a time series data set so we can use time series modeling
+
+```{r}
+
+#The varialbe I'm trying to forecast is PRCP, update to yours
+#Frequency is 12 because it's monthly data, update to your specs
+#Starting on September, 1946, update to your timeframe
+monthly_ts_all<- ts(comp_data_df$PRCP, frequency = 12, start = c(1946, 9))
+```
+
+Creating a season and month plot to see trends year over year
+```{r}
+#probably want to restrict the data set, this is a lot of data so it looks weird
+seasonplot(monthly_ts_all,ylab="Precipitation", xlab="Year", 
+  main="Seasonal plot: Monthly Precipitation from September, 1946 to July, 2014", col=1:12)
+
+
+monthplot(monthly_ts_all,ylab="Precipitation",xlab="Year",xaxt="n",
+  main="Seasonal deviation plot: Monthly Precipitation from September, 1946 to July, 2014")
+axis(1,at=1:12,labels=month.abb,cex=0.8)
+```
+
+Now we'll create a training and testing dataset.  Training will be used to fit the model, testing set will be used to assess the error
+
+```{r}
+#training set is September, 1946 until July, 2012
+train <- window(monthly_ts_all, start=c(1946, 9), end=c(2012, 7))
+
+#testing set is August, 2012 and the next 24 months (24 month forecasting project)
+test <- window(monthly_ts_all,start=c(2012, 8))
+
+#HW needs non-zero observations, so if there are any 0s, update them to 0.001
+train[train==0] <- 0.001
+test[test==0] <- 0.001
+monthly_ts_all[monthly_ts_all==0] <- 0.001
+```
+
+Next decide which hyperparameters in the HW model work the best for your test set 
+
+```{r}
+
+#Function allows for s and d to be variable
+#We use s for the two seasonal options and d for the dampened trend options
+getHW <- function(s, d) {
+  forecast <- hw(train, seasonal = s, damped = d, h = 24)
+  return(accuracy(forecast,test)[2,"RMSE"])
+}
+
+getHW("additive", TRUE)
+getHW("additive", FALSE)
+getHW("multiplicative", TRUE)
+getHW("multiplicative", FALSE)
+```
+
+Chose the model with the lowest RMSE.  If they are the same, you'll probably have to do some more investigating.  Like plotting the prediction intervals. I'll add that code later.
+
+
+
+Now let's plot our training model with the next 24 month predictions, which will be used to compare against our test set.  If our model is good, it should overlay the test set observations
+
+```{r}
+forecastsbest<- hw(train, seasonal = "multiplicative", damped = TRUE, h = 24)
+plot(forecastsbest,ylab="Forecast of Monthly Precipitation using Holt Winters",
+     plot.conf=FALSE, type="o", fcol="white", xlab="Year")
+
+lines(forecastsbest$mean, type="o", col="blue")
+lines(test, type = "o", col = "green")
+legend("topright",lty=1, pch=1, col=c("blue", "green"), 
+  c("Holt Winters' Multiplicative and Dampened Trend", "Test"))
+```
+
+Prediction interval code if you want to check models.
+
+```{r}
+#You'll need to update this code after you create your model.  My model in these scenarios are called forecastsbest, so the prediction intervals are the same.  You'll want to make sure you change that to the two (or more) models you wish to examine
+
+#Upper PI 80% for HW 
+hw_add_upper<- forecastsbest$upper[,1]
+hw_mult_upper<- forecastsbest$upper[,1]
+
+#Lower PI 80% for HW 
+hw_add_lower<- forecastsbest$lower[,1]
+hw_mult_lower<- forecastsbest$lower[,1]
+
+#The subtract the lower value from the upper to get the range.
+
+#Range of PI
+pi_range_add<- hw_add_upper - hw_add_lower
+pi_range_mult<- hw_mult_upper - hw_mult_lower
+
+#Finally, plot the range of the prediction intervals and see how they behave
+
+#Plot PI range
+plot(pi_range_add, ylab = "$ range of 80% Prediction Interval", 
+main = "Prediction interval range for HW Additive and HW Multiplicative",
+col = "blue")
+lines(pi_range_mult, col = "green")
+grid()
+legend("topleft",lty=1, col=c("blue","green"), 
+c("HW Additive", "HW Multiplicative"))
+```
+
+Examine residuals to make sure it looks adequate.
+```{r}
+#Create a random population to make sure residuals are normal
+mynorm <- rnorm(10000, mean=0, sd=1)
+
+#Creating plotting function for a histogram
+plotForecastErrors <- function(forecasterrors)
+  {
+     # make a histogram of the forecast errors:
+     mybinsize <- IQR(forecasterrors)/4
+     mysd   <- sd(forecasterrors)
+     mymin  <- min(forecasterrors) - mysd*5
+     mymax  <- max(forecasterrors) + mysd*3
+     # generate normally distributed data with mean 0 and standard deviation mysd
+     mynorm <- rnorm(10000, mean=0, sd=mysd)
+     mymin2 <- min(mynorm)
+     mymax2 <- max(mynorm)
+     if (mymin2 < mymin) { mymin <- mymin2 }
+     if (mymax2 > mymax) { mymax <- mymax2 }
+     # make a red histogram of the forecast errors, with the normally distributed data overlaid:
+     mybins <- seq(mymin, mymax, mybinsize)
+     hist(forecasterrors, col="red", freq=FALSE, breaks=mybins)
+     # freq=FALSE ensures the area under the histogram = 1
+     # generate normally distributed data with mean 0 and standard deviation mysd
+     myhist <- hist(mynorm, plot=FALSE, breaks=mybins)
+     # plot the normal curve as a blue line on top of the histogram of forecast errors:
+     points(myhist$mids, myhist$density, type="l", col="blue", lwd=2)
+}
+
+#Get the residuals from the model
+hw_res<- forecastsbest$residuals
+
+#Plot them with a histogram
+plotForecastErrors(hw_res)
+
+#Run a QQ plot to make sure it's normal
+qqplot(mynorm, hw_res, xlab = "Normal", ylab = "Holt Winters Residuals", main = "QQ Plot of Holt Winters Residuals")
+
+#Run an autocorrelation correlgram to make sure not too many values fall outside the thresholds
+acf(hw_res, lag.max = 20)
+```
+
+Then examine all error, not just RMSE
+
+```{r}
+accuracy(forecastsbest, test)
+```
+If that looks good, use your model on the entire dataset to predict the next X observations.  In my case I'm looking for the next 24.
+
+```{r}
+#Build the model on all values not just train
+forecastsbest<- hw(monthly_ts_all, seasonal = "multiplicative", damped = TRUE, h = 24)
+
+#mean values are the predictions
+hw_pred<- forecastsbest$mean
+
+#print out predictions
+hw_pred
+
+#plot all data and then add predictions
+plot(monthly_ts_all, main = "Forecasted values using HW")
+grid()
+
+#Dashed line for predictions are easy to read
+lines(hw_pred, col="green", lty=2, lwd=1.5)
+```
+
